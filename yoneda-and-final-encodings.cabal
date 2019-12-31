@@ -1,0 +1,36 @@
+cabal-version:       >=1.10
+name:                yoneda-and-final-encodings
+version:             0.1.0.0
+synopsis:            An article on how use the Yoneda lemma to implement final encodings.
+license:             PublicDomain
+author:              Noah Luck Easterly
+maintainer:          noah.easterly@gmail.com
+build-type:          Simple
+extra-source-files:  CHANGELOG.md, README.md
+
+flag Development
+  description: Enable all warnings and upgrade warnings to errors
+  default: False
+  manual: True
+
+library
+  exposed-modules: YonedaAndFinalEncodings
+  build-depends: base
+  build-tool-depends: markdown-unlit:markdown-unlit
+  hs-source-dirs: src
+  default-language: Haskell2010
+
+  ghc-options: -pgmL markdown-unlit
+  if flag(development)
+    ghc-options: -pgmL markdown-unlit -Wall -Wextra -Werror
+
+
+test-suite doctests
+  type: exitcode-stdio-1.0
+  main-is: test/doctests.hs
+  build-depends: base
+               , doctest
+  build-tool-depends: markdown-unlit:markdown-unlit
+  default-language: Haskell2010
+  if flag(development)
+    ghc-options: -Wall -Wextra -Werror
