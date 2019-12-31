@@ -4,152 +4,100 @@ imports at the top. These are hidden so as not to be distracting to readers of
 the article.
 
 ```haskell
-{-# LANGUAGE Rank2Types #-}
-{-# LANGUAGE GADTs, ConstraintKinds #-}
-{-# LANGUAGE FlexibleInstances #-}
-module YonedaAndFinalEncodings where
+{-# LANGUAGE Rank2Types, ConstraintKinds #-}
+{-# LANGUAGE TypeOperators, MultiParamTypeClasses, FlexibleInstances, QuantifiedConstraints, UndecidableInstances #-} 
+{-# LANGUAGE PolyKinds #-}
+module Final where
 ```
+{-# LANGUAGE UndecidableSuperClasses #-}
+,  ConstraintKinds
 
 -->
 
-The [Yoneda lemma](https://bartoszmilewski.com/2013/05/15/understanding-yoneda/)
-is commonly encoded in Haskell as the understanding that `f a` is isomorphic to
-`forall r. (a -> r) -> f r` aka `Yoneda f a`:
-
 ```haskell
-{-# LANGUAGE Rank2Types #-}
--- ...
-newtype Yoneda f a = Yoneda { runYoneda :: forall r. (a -> r) -> f r }
+{-# LANGUAGE Rank2Types, ConstraintKinds #-}
+-- …
+newtype Final t a = Final { runFinal :: forall x. t x => (a -> x) -> x }
 
-foldYoneda :: (a -> r) -> Yoneda f a -> f r
-foldYoneda = flip runYoneda
+foldFinal :: t b => (a -> b) -> Final t a -> b
+foldFinal = flip runFinal
+
+instance Functor (Final t) where
+  fmap f ma = Final $ \g -> runFinal ma (g . f)
+
+instance Applicative (Final t) where
+  pure a = Final $ \f -> f a
+  mf <*> ma = Final $ \g -> runFinal mf $ \f -> runFinal ma $ g . f
+
+toList :: Final Monoid a -> [a]
+toList = foldFinal return
+
+fromList :: [a] -> Final Monoid a
+fromList as = Final $ \f -> foldMap f as
+
+{-# LANGUAGE TypeOperators, MultiParamTypeClasses, FlexibleInstances, QuantifiedConstraints, UndecidableInstances #-}
+-- …
+class (d => c) => c ⊆ d
+instance (d => c) => c ⊆ d
+
+type f ≤ g = forall x. f x ⊆ g x
+
+{-# LANGUAGE PolyKinds #-}
+-- …
+class (f &&& g) a
+instance (f a, g a) => (f &&& g) a
+
+-- monoapplicative - monopure
+nullary :: (forall x. t x => x) -> Final t a
+nullary x = Final $ \_ -> x
+
+-- monofunctor - monomap
+unary :: (forall x. t x => x -> x) -> Final t a -> Final t a
+unary f ma = Final $ f . runFinal ma
+
+-- monoapplicative - monoliftA2
+binary :: (forall x. t x => x -> x -> x) -> Final t a -> Final t a -> Final t a
+binary op ma mb = Final $ \f -> foldFinal f ma `op` foldFinal f mb
+
+instance Semigroup ≤ t => Semigroup (Final t a) where
+  (<>) = binary (<>)
+
+instance Monoid ≤ t => Monoid (Final t a) where
+  mempty = nullary mempty
+
+instance Num ≤ t => Num (Final t a) where
+  (+) = binary (+)
+  (*) = binary (*)
+  (-) = binary (-)
+  abs = unary abs
+  signum = unary signum
+  fromInteger i = nullary (fromInteger i)
+
+instance Fractional ≤ t => Fractional (Final t a) where
+  (/) = binary (/)
+  recip = unary recip
+  fromRational r = nullary (fromRational r)
+
+instance Floating ≤ t => Floating (Final t a) where
+  pi = nullary pi
+
+  exp = unary exp
+  log = unary log
+
+  cos = unary cos
+  sin = unary sin
+  tan = unary tan
+  acos = unary acos
+  asin = unary asin
+  atan = unary atan
+
+  cosh = unary cosh
+  sinh = unary sinh
+  tanh = unary tanh
+  acosh = unary acosh
+  asinh = unary asinh
+  atanh = unary atanh
 ```
-
-This isomorphism relies on `f` being a `Functor`:
-
-```haskell
-toYoneda :: Functor f => f a -> Yoneda f a
-toYoneda fa = Yoneda $ \f -> fmap f fa
-
-fromYoneda :: Yoneda f a -> f a
-fromYoneda = foldYoneda id
-```
-
-Something I stumbled across recently is that `Yoneda f` can still be quite
-useful even when `f` is not a `Functor`.  In fact, it can be used to implement
-[final encodings](https://peddie.github.io/encodings/encodings-text.html).
-
-## Definitely *Not* a `Functor`
-
-The `Obj t a` type packs packs the proof that type `a` has an instance
-of typeclass `t` along with a value of type `a`.
-
-```haskell
-{-# LANGUAGE GADTs, ConstraintKinds #-}
--- ...
-data Obj t a where
-  Obj :: t a => a -> Obj t a
-
-getObj :: Obj t a -> a
-getObj (Obj a) = a
-```
-
-`Obj t` is definitely not a `Functor` for most values of `t`.  Given just
-function `a -> b` and a value of type `Obj t a`, there's no way to prove that
-type `b` has an instance of typeclass `t`:
-
-```haskell
--- $
--- >>> :{
--- instance Functor (Obj t) where
---   fmap f (Obj a) = Obj (f a)
--- :}
--- ...
---     • Could not deduce: t b arising from a use of ‘Obj’
---       from the context: t a
---         bound by a pattern with constructor:
---                    Obj :: forall (t :: * -> Constraint) a. t a => a -> Obj t a,
---                  in an equation for ‘fmap’
--- ...
-```
-
-Consider, though `Yoneda (Obj t) a`: 
-
-```haskell ignore
-Yoneda (Obj t) a
-~ forall b. (a -> b) -> Obj t b
-~ forall b. t b => (a -> b) -> b -- XXX: this isn't true.
-```
-
-In english, this means that `Yoneda (Obj t) a` values can be converted to
-values that are instances of `t`, given a way to convert `a`s.
-
-For example, this means that `Yoneda Monoid a` and `[a]` are isomorphic:
-
-```haskell
-toList :: Yoneda (Obj Monoid) a -> [a]
-toList = getObj . foldYoneda return
-
-
-{-
--- XXX: Oops, argument breaks down here.
-fromList :: [a] -> Yoneda (Obj Monoid) a
-fromList as = Yoneda $ \f -> _ (foldMap f as)
-  {-
-  src/YonedaAndFinalEncodings.lhs:96:30: error:
-      • Found hole: _ :: r -> Obj Monoid r
-        Where: ‘r’ is a rigid type variable bound by
-                 a type expected by the context:
-                   forall r. (a -> r) -> Obj Monoid r
-                 at src/YonedaAndFinalEncodings.lhs:96:15-45
-      • In the expression: _
-        In the expression: _ (foldMap f as)
-        In the second argument of ‘($)’, namely ‘\ f -> _ (foldMap f as)’
-      • Relevant bindings include
-          f :: a -> r (bound at src/YonedaAndFinalEncodings.lhs:96:25)
-          as :: [a] (bound at src/YonedaAndFinalEncodings.lhs:96:10)
-          fromList :: [a] -> Yoneda (Obj Monoid) a
-            (bound at src/YonedaAndFinalEncodings.lhs:96:1)
-     |
-  96 | fromList as = Yoneda $ \f -> _ (foldMap f as)
-     |                              ^
-
-  src/YonedaAndFinalEncodings.lhs:96:33: error:
-      • No instance for (Monoid r) arising from a use of ‘foldMap’
-        Possible fix:
-          add (Monoid r) to the context of
-            a type expected by the context:
-              forall r. (a -> r) -> Obj Monoid r
-      • In the first argument of ‘_’, namely ‘(foldMap f as)’
-        In the expression: _ (foldMap f as)
-        In the second argument of ‘($)’, namely ‘\ f -> _ (foldMap f as)’
-     |
-  96 | fromList as = Yoneda $ \f -> _ (foldMap f as)
-     |                                 ^^^^^^^^^^^^
-  -}
--}
-```
-
-<div style="display:none">
-
-This packaging lets functions use functions defined by the specified typeclass
-without specifying that it's required in the type signature:
-
-
-```
-{-# LANGUAGE FlexibleInstances #-}
--- |
--- >>> :set -XTypeApplications
--- >>> print $ Obj @Show @Int 5
--- Obj 5
--- >>> print $ Obj @Show (Just ())
--- Obj (Just ())
-instance Show (Obj Show a) where
-  showsPrec p (Obj a) = showParen (p >= 10) $ showString "Obj " . showsPrec 11 a
-```
-
-</div>
-
 
 
 

@@ -1,7 +1,7 @@
 cabal-version:       >=1.10
-name:                yoneda-and-final-encodings
+name:                final-encodings
 version:             0.1.0.0
-synopsis:            An article on how use the Yoneda lemma to implement final encodings.
+synopsis:            An article about final encodings
 license:             PublicDomain
 author:              Noah Luck Easterly
 maintainer:          noah.easterly@gmail.com
@@ -14,7 +14,7 @@ flag Development
   manual: True
 
 library
-  exposed-modules: YonedaAndFinalEncodings
+  exposed-modules: Final
   build-depends: base
   build-tool-depends: markdown-unlit:markdown-unlit
   hs-source-dirs: src
