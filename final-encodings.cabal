@@ -15,7 +15,7 @@ flag Development
 
 library
   exposed-modules: Final
-  build-depends: base
+  build-depends: base, ghc, mtl
   build-tool-depends: markdown-unlit:markdown-unlit
   hs-source-dirs: src
   default-language: Haskell2010
@@ -28,8 +28,7 @@ library
 test-suite doctests
   type: exitcode-stdio-1.0
   main-is: test/doctests.hs
-  build-depends: base
-               , doctest
+  build-depends: final-encodings, base, doctest
   build-tool-depends: markdown-unlit:markdown-unlit
   default-language: Haskell2010
   if flag(development)
