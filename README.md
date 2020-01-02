@@ -7,7 +7,13 @@ the article.
 {-# LANGUAGE Rank2Types, ConstraintKinds #-}
 {-# LANGUAGE TypeOperators, MultiParamTypeClasses, FlexibleInstances, QuantifiedConstraints, UndecidableInstances #-} 
 {-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE ScopedTypeVariables, TypeApplications, GADTs #-}
 module Final where
+
+import Data.Functor.Const
+import Data.Functor.Identity
+import Data.Coerce
 ```
 {-# LANGUAGE UndecidableSuperClasses #-}
 ,  ConstraintKinds
@@ -22,6 +28,31 @@ newtype Final t a = Final { runFinal :: forall x. t x => (a -> x) -> x }
 foldFinal :: t b => (a -> b) -> Final t a -> b
 foldFinal = flip runFinal
 
+```
+
+`Final t a` is a continuum of types between `Cont r a` (isomorphic to `Final ((~) r) a`)
+and `Identity` (isomorphic to `Final Any a` via the Yoneda lemma).
+
+```haskell ignore
+Final ((~) r) a
+≈ forall x. (r ~ x) => (a -> x) -> x
+≈ (a -> r) -> r
+≈ Cont r a
+
+class Any a
+instance Any a
+
+newtype Yoneda f a = Yoneda { runYoneda :: forall b. (a -> b) -> f b }
+
+Final Any a
+≈ forall x. Any x => (a -> x) -> x
+≈ forall x. (a -> x) -> x
+≈ forall x. (a -> x) -> Identity x
+≈ Yoneda Identity a
+≈ Identity a
+```
+
+```haskell
 instance Functor (Final t) where
   fmap f ma = Final $ \g -> runFinal ma (g . f)
 
@@ -37,35 +68,55 @@ fromList as = Final $ \f -> foldMap f as
 
 {-# LANGUAGE TypeOperators, MultiParamTypeClasses, FlexibleInstances, QuantifiedConstraints, UndecidableInstances #-}
 -- …
-class (d => c) => c ⊆ d
-instance (d => c) => c ⊆ d
+class (d => c) => d ⊆ c
+instance (d => c) => d ⊆ c
 
 type f ≤ g = forall x. f x ⊆ g x
+
+specialize :: t' ≤ t => Final t a -> Final t' a
+-- specialize ma = Final $ runFinal ma
+specialize = coerce
 
 {-# LANGUAGE PolyKinds #-}
 -- …
 class (f &&& g) a
 instance (f a, g a) => (f &&& g) a
 
+algebra :: Functor f => (forall x. t x => f x -> x) -> f (Final t a) -> Final t a
+algebra f ma = Final $ \g -> f $ fmap (foldFinal g) ma
+
+newtype Any t = Any { getAny :: forall a. t a => a }
+
+any :: (forall x. t x => x) -> Any t
+any x = Any x
+
 -- monoapplicative - monopure
-nullary :: (forall x. t x => x) -> Final t a
-nullary x = Final $ \_ -> x
+nullary :: forall t a. (forall x. t x => x) -> Final t a
+-- nullary x = Final $ \_ -> x
+-- nullary x = algebra (getAny . getConst) (Const (Any @t x))
+nullary x = algebra (const x) (Const ())
+
 
 -- monofunctor - monomap
 unary :: (forall x. t x => x -> x) -> Final t a -> Final t a
-unary f ma = Final $ f . runFinal ma
+-- unary f ma = Final $ f . runFinal ma
+unary f = algebra (f . runIdentity) . Identity
+
+data Pair a = Pair a a deriving Functor
 
 -- monoapplicative - monoliftA2
 binary :: (forall x. t x => x -> x -> x) -> Final t a -> Final t a -> Final t a
-binary op ma mb = Final $ \f -> foldFinal f ma `op` foldFinal f mb
+-- binary op ma mb = Final $ \f -> foldFinal f ma `op` foldFinal f mb
+binary op ma mb = algebra (\(Pair a b) -> a `op` b) (Pair ma mb)
 
-instance Semigroup ≤ t => Semigroup (Final t a) where
+
+instance t ≤ Semigroup => Semigroup (Final t a) where
   (<>) = binary (<>)
 
-instance Monoid ≤ t => Monoid (Final t a) where
+instance t ≤ Monoid => Monoid (Final t a) where
   mempty = nullary mempty
 
-instance Num ≤ t => Num (Final t a) where
+instance t ≤ Num => Num (Final t a) where
   (+) = binary (+)
   (*) = binary (*)
   (-) = binary (-)
@@ -73,12 +124,12 @@ instance Num ≤ t => Num (Final t a) where
   signum = unary signum
   fromInteger i = nullary (fromInteger i)
 
-instance Fractional ≤ t => Fractional (Final t a) where
+instance t ≤ Fractional => Fractional (Final t a) where
   (/) = binary (/)
   recip = unary recip
   fromRational r = nullary (fromRational r)
 
-instance Floating ≤ t => Floating (Final t a) where
+instance t ≤ Floating => Floating (Final t a) where
   pi = nullary pi
 
   exp = unary exp
@@ -97,6 +148,11 @@ instance Floating ≤ t => Floating (Final t a) where
   acosh = unary acosh
   asinh = unary asinh
   atanh = unary atanh
+```
+
+```haskell
+-- newtype Final1 
+
 ```
 
 
