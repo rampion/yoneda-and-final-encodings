@@ -255,6 +255,25 @@ handleT f mx = FinalT $ \g -> mx `runFinalT` \case
   This ax   -> f ax
   That asx  -> g asx
 
+omapT :: (forall o. t o => o ~> o) -> (FinalT t a ~> FinalT t a)
+omapT f mx = FinalT $ \g -> f (runFinalT mx g)
+
+-- monomorphically monadic in (t o => o x)
+opureT :: (forall o. t o => o x) -> FinalT t a x
+opureT bx = FinalT $ \_ -> bx
+
+class Functor1 f where
+  fmap1 :: (a ~> b) -> (f a ~> f b)
+
+algebraT :: Functor1 f => (forall o. t o => f o ~> o) -> f (FinalT t a) ~> FinalT t a
+algebraT f mx = FinalT $ \g -> f $ fmap1 (foldFinalT g) mx
+
+obindT :: FinalT t a x -> (forall o. t o => o ~> FinalT t a) -> FinalT t a x
+obindT mx f = ojoinMapT f mx
+
+ojoinMapT :: (forall o. t o => o ~> FinalT t a) -> (FinalT t a ~> FinalT t a)
+ojoinMapT f mx = FinalT $ \g -> f (runFinalT mx g) `runFinalT` g
+
 -- monadic in a
 fmapT :: (a ~> b) -> (FinalT t a ~> FinalT t b)
 fmapT f mx = FinalT $ \g -> mx `runFinalT` (g . f)
@@ -286,12 +305,6 @@ bindT mx f = joinMapT f mx
 joinMapT :: (a ~> FinalT t b) -> (FinalT t a ~> FinalT t b)
 joinMapT f mx = FinalT $ \g -> mx `runFinalT` \ax -> f ax `runFinalT` g
 
--- monomorphically monadic in (t o => o x)
-opureT :: (forall o. t o => o x) -> FinalT t a x
-opureT bx = FinalT $ \_ -> bx
-
-ojoinMapT :: (forall o. t o => o ~> FinalT t a) -> (FinalT t a ~> FinalT t a)
-ojoinMapT f mx = FinalT $ \g -> f (runFinalT mx g) `runFinalT` g
 
 -- functorial in t
 specifyT :: forall t t' a x. t ≤ t' => FinalT t' a x -> FinalT t a x
@@ -366,104 +379,6 @@ example6 = emptyT (\case { Get -> get; Put s -> put s}) $ do
 -}
 ```
 
-```haskell
-newtype Confine m a x = Confine ((a ~> m) -> m x)
-
-runConfine :: Confine m a x -> (a ~> m) -> m x
-runConfine (Confine g) f = g f
-
-foldConfine :: (a ~> m) -> (Confine m a ~> m)
-foldConfine f cx = runConfine cx f
-
-instance Functor m => Functor (Confine m a) where
-  fmap f cx = Confine $ \g -> fmap f (runConfine cx g)
-
-instance Applicative m => Applicative (Confine m a) where
-  pure a = Confine $ \_ -> pure a
-  cf <*> cx = Confine $ \g -> runConfine cf g <*> runConfine cx g
-
-instance Monad m => Monad (Confine m a) where
-  cx >>= f = Confine $ \g -> runConfine cx g >>= \x -> runConfine (f x) g
-
-fmapC :: (a ~> b) -> (Confine m a ~> Confine m b)
-fmapC f cx = Confine $ \g -> cx `runConfine` (g . f)
-
-pureC :: a ~> Confine m a
-pureC ax = Confine $ \g -> g ax
-
-bindC :: Confine m a x -> (a ~> Confine m b) -> Confine m b x
-bindC cx f = Confine $ \g -> cx `runConfine` \ax -> f ax `runConfine` g
-
-increment0 :: Monad m => Confine m (StateEff Int) ()
-increment0 = do
-  i <- pureC Get
-  pureC $ Put (i + 1)
-
-toMonadState :: MonadState s m => StateEff s ~> m
-toMonadState = \case
-  Get   -> get
-  Put s -> put s
-
-x1 :: MonadState s m => Confine m (StateEff s) ~> m
-x1 = foldConfine toMonadState
-
-x2 :: Monad m => Confine (StateT s m) (StateEff s) x -> s -> m (x, s)
-x2 = runStateT . foldConfine toMonadState
-
-x3 :: Confine (State s) (StateEff s) x -> s -> (x, s)
-x3 = runState . foldConfine toMonadState
-
--- $
--- >>> :set -XLambdaCase -XGADTs
--- >>> (increment0 `runConfine` toMonadState) `execState` 0
--- 1
-
-type Eff m es = Confine m (Union es)
-
-data Union (es :: [* -> *]) (x :: *) where
-  Here :: e x -> Union (e ': es) x
-  There :: Union es x -> Union (e ': es) x
-
-handleC :: (e ~> m) -> (Eff m (e ': es) ~> Eff m es)
-handleC f cx = Confine $ \g -> cx `runConfine` \case
-  Here ex   -> f ex
-  There esx -> g esx
-
-class e ∈ es where
-  inj :: e ~> Union es
-
-instance e ∈ (e ': et) where
-  inj = Here
-
-instance e ∈ et => e ∈ (x ': et) where
-  inj = There . inj
-
-liftC :: e ∈ es => e ~> Eff m es
-liftC = pureC . inj
-
-increment1 :: (StateEff Int ∈ es, Monad m) => Eff m es ()
-increment1 = do
-  i <- liftC $ Get @Int
-  liftC $ Put (i + 1)
-
-x4 :: e ∈ es => Confine m e ~> Eff m es
-x4 = fmapC inj
-
-increment2 :: (StateEff Int ∈ es, Monad m) => Eff m es ()
-increment2 = fmapC inj increment0
-
-x5 :: MonadState s m => Eff m (StateEff s ': es) ~> Eff m es
-x5 = handleC toMonadState
-
-x8 :: (MonadTrans t, Monad m) => Eff m es ~> Eff (t m) es
-x8 = undefined
-
-{-
-x6 :: Eff m (StateEff s ': es) ~> StateT s (Eff m es)
-x6 cx = StateT $ \s -> Confine $ \g -> _ cx s g
--}
-
-```
 
 
 
