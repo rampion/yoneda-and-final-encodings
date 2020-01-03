@@ -10,12 +10,17 @@ the article.
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE ScopedTypeVariables, TypeApplications, GADTs #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE LambdaCase, EmptyCase #-}
+{-# LANGUAGE UndecidableSuperClasses #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE IncoherentInstances #-}
 module Final where
 
 import Data.Functor.Const
 import Data.Functor.Identity
 import Control.Monad (liftM, ap)
 import Control.Monad.Cont
+import Control.Monad.State
 import Pair
 ```
 import Data.Coerce
@@ -27,10 +32,10 @@ import Data.Coerce
 ```haskell
 {-# LANGUAGE Rank2Types, ConstraintKinds #-}
 -- …
-newtype Final t a = Final { runFinal :: forall b. t b => (a -> b) -> b }
+newtype Final t a = Final { runFinal :: forall o. t o => (a -> o) -> o }
 infix 0 `runFinal`
 
-foldFinal :: t b => (a -> b) -> Final t a -> b
+foldFinal :: t o => (a -> o) -> Final t a -> o
 foldFinal = flip runFinal
 ```
 
@@ -48,43 +53,43 @@ instance Monad (Final t) where
   ma >>= f = Final $ \g -> ma `runFinal` \a -> f a `runFinal` g
 ```
 
-But it's also a monomorphically monadic in `t b => b`:
+But it's also a monomorphically monadic in `t o => o`:
 
 
 ```haskell
 -- mono-functor
-omap :: (forall b. t b => b -> b) -> Final t a -> Final t a
+omap :: (forall o. t o => o -> o) -> Final t a -> Final t a
 omap f ma = Final $ f . runFinal ma
 
 -- mono-applicative
-opure :: (forall b. t b => b) -> Final t a
+opure :: (forall o. t o => o) -> Final t a
 opure b = Final $ \_ -> b
 
-oap :: (forall b. t b => b -> b -> b) -> Final t a -> Final t a -> Final t a
+oap :: (forall o. t o => o -> o -> o) -> Final t a -> Final t a -> Final t a
 oap f m0 m1 = Final $ \g -> f (runFinal m0 g) (runFinal m1 g)
 
 -- mono-monad
-obind :: Final t a -> (forall b. t b => b -> Final t a) -> Final t a
+obind :: Final t a -> (forall o. t o => o -> Final t a) -> Final t a
 obind ma f = Final $ \g -> f (runFinal ma g) `runFinal` g
 ```
 
-Any f-algebra on `t b => b` can be lifted to an f-algebra on `Final t a`. 
+Any f-algebra on `t o => o` can be lifted to an f-algebra on `Final t a`. 
 
 ```haskell
-algebra :: Functor f => (forall b. t b => f b -> b) -> f (Final t a) -> Final t a
+algebra :: Functor f => (forall o. t o => f o -> o) -> f (Final t a) -> Final t a
 algebra f ma = Final $ \g -> f $ fmap (foldFinal g) ma where
 ```
 
 This could be used to define equivalent mono-functor and mono-applicative instances:
 
 ```haskell
-omap' :: (forall b. t b => b -> b) -> Final t a -> Final t a
+omap' :: (forall o. t o => o -> o) -> Final t a -> Final t a
 omap' f = algebra (f . runIdentity) . Identity
 
-opure' :: (forall b. t b => b) -> Final t a
+opure' :: (forall o. t o => o) -> Final t a
 opure' b = algebra (const b) (Const ())
 
-oap' :: (forall b. t b => b -> b -> b) -> Final t a -> Final t a -> Final t a
+oap' :: (forall o. t o => o -> o -> o) -> Final t a -> Final t a -> Final t a
 oap' op m0 m1 = algebra (\(Pair a b) -> a `op` b) (Pair m0 m1)
 ```
 
@@ -117,8 +122,8 @@ toIdentity = Identity . foldFinal id
 
 -- Define a partial order on constraints.
 --
--- Given `d => c`, the set of types with `d` instances is contained in the
--- set of types with `c` instances (e.g.  `Applicative => Functor`)
+-- Given `d => c`, the Put of types with `d` instances is contained in the
+-- Put of types with `c` instances (e.g.  `Applicative => Functor`)
 class (d => c) => d ⊆ c
 instance (d => c) => d ⊆ c
 
@@ -128,10 +133,17 @@ type f ≤ g = forall x. f x ⊆ g x
 specify :: forall t t' a. t ≤ t' => Final t' a -> Final t a
 specify ma = Final $ runFinal ma
 
+handle :: (forall o. t o => a -> o) -> Final t (Either a as) -> Final t as
+handle f me = Final $ \g -> me `runFinal` \case
+  Left a -> f a
+  Right as -> g as
+
 {-# LANGUAGE PolyKinds #-}
 -- …
-class (f &&& g) a
+class (f a, g a) => (f &&& g) a
 instance (f a, g a) => (f &&& g) a
+
+infixr 3 &&&
 ```
 
 Using the standard reader trick for `->`, `Final t a` can often implement `t`:
@@ -196,33 +208,159 @@ example = (pure () + 1) ** 2
 ```
 
 ```haskell
-newtype Final1 t a x = Final1 { runFinal1 :: forall b. t b => (forall y. a y -> b y) -> b x }
+type (a ~> b) = forall x. a x -> b x
 
-foldFinal1 :: t b => (forall y. a y -> b y) -> Final1 t a x -> b x
-foldFinal1 g mx = runFinal1 mx g
+newtype FinalT t a x = FinalT { runFinalT :: forall o. t o => (a ~> o) -> o x }
 
-instance t ≤ Functor => Functor (Final1 t a) where
-  fmap f mx = Final1 $ \g -> fmap f $ runFinal1 mx g
+foldFinalT :: t o => (a ~> o) -> (FinalT t a ~> o)
+foldFinalT g mx = runFinalT mx g
 
-instance t ≤ Applicative => Applicative (Final1 t a) where
-  pure a = Final1 $ \_ -> pure a
-  mf <*> mx = Final1 $ \g -> runFinal1 mf g <*> runFinal1 mx g
+instance t ≤ Functor => Functor (FinalT t a) where
+  fmap f mx = FinalT $ \g -> fmap f $ runFinalT mx g
 
-instance t ≤ Monad => Monad (Final1 t a) where
-  mx >>= f = Final1 $ \g -> runFinal1 mx g >>= \x -> runFinal1 (f x) g
+instance t ≤ Applicative => Applicative (FinalT t a) where
+  pure a = FinalT $ \_ -> pure a
+  mf <*> mx = FinalT $ \g -> runFinalT mf g <*> runFinalT mx g
 
-lift :: a x -> Final1 t a x
-lift ax = Final1 $ \g -> g ax
+instance t ≤ Monad => Monad (FinalT t a) where
+  mx >>= f = FinalT $ \g -> runFinalT mx g >>= \x -> runFinalT (f x) g
 
-olift :: (forall b. t b => b x) -> Final1 t a x
-olift bx = Final1 $ \_ -> bx
+data Void
 
-specify1 :: t ≤ t' => Final1 t' a x -> Final1 t a x
-specify1 ma = Final1 $ runFinal1 ma
+absurd :: Void -> a
+absurd = \case
 
-olift' :: forall t t' a x. t ≤ t' => (forall b. t' b => b x) -> Final1 t a x
--- olift' bx = Final1 $ \_ -> bx
-olift' bx = specify1 (olift @t' bx)
+data VoidT x
+
+absurdT :: VoidT x -> a
+absurdT = \case
+
+
+collapseFinal :: t o => Final t Void -> o
+collapseFinal = foldFinal absurd
+
+collapseFinalT :: t o => FinalT t VoidT x -> o x
+collapseFinalT = foldFinalT absurdT
+
+data (f ||| g) x where
+  This :: f x -> (f ||| g) x
+  That :: g x -> (f ||| g) x
+
+infixr 2 |||
+
+handleT :: (forall o. t o => a ~> o) -> (FinalT t (a ||| as) ~> FinalT t as)
+handleT f mx = FinalT $ \g -> mx `runFinalT` \case
+  This ax   -> f ax
+  That asx  -> g asx
+
+-- monadic in a
+fmapT :: (a ~> b) -> (FinalT t a ~> FinalT t b)
+fmapT f mx = FinalT $ \g -> mx `runFinalT` (g . f)
+
+pureT :: a ~> FinalT t a
+pureT ax = FinalT $ \g -> g ax
+
+-- dependent product
+data Product a b x where
+  Product :: a y -> b x -> Product a b x
+
+zipT :: FinalT t a x -> (forall y. FinalT t b y) -> FinalT t (Product a b) x
+zipT ma mb =
+  ma `bindT` \a ->
+  mb `bindT` \b ->
+  pureT $ Product a b
+
+newtype (a *~> b) x = K { runK :: a ~> b }
+
+apT :: FinalT t (a *~> b) x -> (forall y. FinalT t a y) -> FinalT t b x
+apT mf ma =
+  mf `bindT` \f ->
+  ma `bindT` \a ->
+  pureT $ runK f a
+
+bindT :: FinalT t a x -> (a ~> FinalT t b) -> FinalT t b x
+bindT mx f = joinMapT f mx
+
+joinMapT :: (a ~> FinalT t b) -> (FinalT t a ~> FinalT t b)
+joinMapT f mx = FinalT $ \g -> mx `runFinalT` \ax -> f ax `runFinalT` g
+
+-- monomorphically monadic in (t o => o x)
+opureT :: (forall o. t o => o x) -> FinalT t a x
+opureT bx = FinalT $ \_ -> bx
+
+ojoinMapT :: (forall o x. t o => o x -> FinalT t a x) -> FinalT t a x -> FinalT t a x
+ojoinMapT f mx = FinalT $ \g -> f (runFinalT mx g) `runFinalT` g
+
+-- functorial in t
+specifyT :: forall t t' a x. t ≤ t' => FinalT t' a x -> FinalT t a x
+specifyT ma = FinalT (runFinalT ma)
+
+data StateEff s x where
+  Get :: StateEff s s
+  Put :: s -> StateEff s ()
+
+runStateEff :: (t ≤ MonadState s, t ≤ t')  => FinalT t' (StateEff s ||| as) x -> FinalT t as x
+runStateEff = handleT (\case { Get -> get; Put s -> put s }) . specifyT
+
+runStateEff' :: forall t s as x. FinalT t (StateEff s ||| as) x -> FinalT (MonadState s &&& t) as x
+runStateEff' = handleT (\case { Get -> get; Put s -> put s }) . specifyT
+
+this :: FinalT t a x -> FinalT t (a ||| as) x
+this = fmapT This
+
+that :: FinalT t as x -> FinalT t (a ||| as) x
+that = fmapT That
+
+example2 :: MonadState Integer m => m ()
+example2 = collapseFinalT . runStateEff @(MonadState Integer) . this @Monad $ do
+  i <- pureT Get
+  pureT (Put (i + 1))
+
+example2' :: MonadState Integer m => m ()
+example2' = collapseFinalT . runStateEff' @Monad . this $ do
+  i <- pureT Get
+  pureT (Put (i + 1))
+
+class a ∈ as where
+  insert :: a x -> as x
+
+instance a ∈ (a ||| as) where
+  insert = This
+
+instance a ∈ as => a ∈ (b ||| as) where
+  insert = That . insert
+
+example3 :: MonadState Integer m => m ()
+example3 = collapseFinalT . runStateEff @(MonadState Integer) @Integer @Monad $ do
+  i <- liftT $ Get @Integer
+  liftT . Put $ i + 1
+
+example3' :: MonadState Integer m => m ()
+example3' = collapseFinalT . runStateEff' @Monad $ do
+  i <- liftT $ Get @Integer
+  liftT . Put $ i + 1
+
+example4 :: (MonadState Integer m, Monad m) => m ()
+example4 = foldFinalT @(MonadState Integer) (\case { Get -> get; Put s -> put s}) $ do
+  i <- pureT $ Get @Integer
+  pureT . Put $ i + 1
+
+example5 :: FinalT (MonadState Integer) VoidT ()
+example5 = joinMapT (\case { Get -> opureT get; Put s -> opureT $ put s}) $ do
+  i <- pureT $ Get @Integer
+  pureT . Put $ i + 1
+
+emptyT :: (forall o. t o => a ~> o) -> (FinalT t a ~> FinalT t VoidT)
+emptyT f = joinMapT (\ax -> opureT $ f ax)
+
+example6 :: FinalT (MonadState Integer) VoidT ()
+example6 = emptyT (\case { Get -> get; Put s -> put s}) $ do
+  i <- pureT $ Get @Integer
+  pureT . Put $ i + 1
+
+
+liftT :: a ∈ as => a x -> FinalT t as x
+liftT = pureT . insert
 ```
 
 

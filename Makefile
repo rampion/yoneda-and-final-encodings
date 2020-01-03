@@ -1,5 +1,8 @@
+ghcid:
+	ghcid --command='cabal repl doctests' --test='main' --run=':!make html' --reload=src --restart=final-encodings.cabal
+
 repl:
-	ghcid --command 'cabal repl doctests' --test 'main' --reload=src --restart=final-encodings.cabal
+	cabal repl
 
 build:
 	cabal build
